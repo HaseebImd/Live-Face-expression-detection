@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Upload and Record</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        /* Additional custom styles */
+        .half-screen {
+            text-align: center;
+        }
+        video {
+            width: 100%;
+            height: auto;
+        }
+        img {
+            width: 100%;
+            height: auto;
+        }
+        .loader-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: none;
+            justify-content: center;
+            align-items: center;
+        }
+        .loader {
+            border: 8px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 8px solid #3498db;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="row">
+            <div class="col-md-6 half-screen">
+                <h2>Upload Video</h2>
+                <form id="uploadForm">
+                    <div class="input-group mb-3">
+                        <div class="custom-file">
+                            <input type="file" class="custom-file-input" id="videoUpload" accept="video/*">
+                            <label class="custom-file-label" for="videoUpload">Please choose video file</label>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Upload Video</button>
+                </form>
+                <div id="result"></div>
+            </div>
+            <div class="col-md-6 half-screen">
+                <h2>Record Video</h2>
+                <video id="video" autoplay></video><br>
+                <button id="startStopButton" class="btn btn-primary">Start Camera</button>
+                <button id="sendVideoButton" class="btn btn-success" style="display: none;">Send Video</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loader overlay -->
+    <div class="loader-overlay" id="loaderOverlay">
+        <div class="loader"></div>
+    </div>
+
+    <!-- Bootstrap JS and dependencies -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.16.0/umd/popper.min.js"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+
+   <script>
+        const uploadForm = document.getElementById('uploadForm');
+        const videoUpload = document.getElementById('videoUpload');
+        const startStopButton = document.getElementById('startStopButton');
+        const sendVideoButton = document.getElementById('sendVideoButton');
+        const videoElement = document.getElementById('video');
+        const resultDiv = document.getElementById('result');
+        const loaderOverlay = document.getElementById('loaderOverlay');
+
+        let mediaRecorder;
+        let recordedChunks = [];
+
+        // Upload video
+        uploadForm.addEventListener('submit', function(event) {
+            event.preventDefault();
+            const file = videoUpload.files[0];
+            if (file) {
+                const formData = new FormData();
+                formData.append('video', file);
+
+                showLoader();
+
+                fetch("{% url 'process-video' %}", {
+                    method: 'POST',
+                    body: formData,
+                    headers: {
+                        'X-CSRFToken': '{{ csrf_token }}'
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.image) {
+                        const img = document.createElement('img');
+                        img.src = `data:image/png;base64,${data.image}`;
+                        resultDiv.innerHTML = '';
+                        resultDiv.appendChild(img);
+                    }
+                })
+                .catch(error => console.error('Error:', error))
+                .finally(() => hideLoader());
+            }
+        });
+
+        // Record video
+        startStopButton.addEventListener('click', async function() {
+            if (startStopButton.textContent === 'Start Camera') {
+                startStopButton.textContent = 'Stop Camera';
+                sendVideoButton.style.display = 'none';
+
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    videoElement.srcObject = stream;
+
+                    mediaRecorder = new MediaRecorder(stream);
+                    mediaRecorder.ondataavailable = function(event) {
+                        if (event.data.size > 0) {
+                            recordedChunks.push(event.data);
+                        }
+                    };
+                    mediaRecorder.start();
+
+                    startStopButton.textContent = 'Stop Recording';
+                } catch (err) {
+                    console.error('Error accessing media devices.', err);
+                }
+            } else if (startStopButton.textContent === 'Stop Recording') {
+                mediaRecorder.stop();
+                videoElement.srcObject.getTracks().forEach(track => track.stop());
+                startStopButton.textContent = 'Start Camera';
+                sendVideoButton.style.display = 'block';
+            }
+        });
+
+        // Send recorded video
+        sendVideoButton.addEventListener('click', function() {
+            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const formData = new FormData();
+            formData.append('video', blob, 'recorded_video.webm');
+
+            showLoader();
+
+            fetch("{% url 'process-video' %}", {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'X-CSRFToken': '{{ csrf_token }}'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.image) {
+                    const img = document.createElement('img');
+                    img.src = `data:image/png;base64,${data.image}`;
+                    resultDiv.innerHTML = '';
+                    resultDiv.appendChild(img);
+                }
+                        else if (data.error) {
+                resultDiv.innerHTML = data.error;
+            }
+            })
+            .catch(error => console.error('Error:', error))
+            .finally(() => hideLoader());
+
+            // Reset recorded chunks
+            recordedChunks = [];
+            sendVideoButton.style.display = 'none';
+        });
+
+        function showLoader() {
+            loaderOverlay.style.display = 'flex';
+        }
+
+        function hideLoader() {
+            loaderOverlay.style.display = 'none';
+        }
+    </script>
+</body>
+</html>
